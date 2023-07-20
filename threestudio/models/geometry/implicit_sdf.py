@@ -10,7 +10,7 @@ import threestudio
 from threestudio.models.geometry.base import BaseImplicitGeometry, contract_to_unisphere
 from threestudio.models.mesh import Mesh
 from threestudio.models.networks import get_encoding, get_mlp
-from threestudio.utils.misc import get_rank
+from threestudio.utils.misc import broadcast, get_rank
 from threestudio.utils.typing import *
 
 
@@ -132,7 +132,15 @@ class ImplicitSDF(BaseImplicitGeometry):
 
             import trimesh
 
-            mesh = trimesh.load(mesh_path)
+            scene = trimesh.load(mesh_path)
+            if isinstance(scene, trimesh.Trimesh):
+                mesh = scene
+            elif isinstance(scene, trimesh.scene.Scene):
+                mesh = trimesh.Trimesh()
+                for obj in scene.geometry.values():
+                    mesh = trimesh.util.concatenate([mesh, obj])
+            else:
+                raise ValueError(f"Unknown mesh type at {mesh_path}.")
 
             # move to center
             centroid = mesh.vertices.mean(0)
@@ -208,6 +216,10 @@ class ImplicitSDF(BaseImplicitGeometry):
             optim.zero_grad()
             loss.backward()
             optim.step()
+
+        # explicit broadcast to ensure param consistency across ranks
+        for param in self.parameters():
+            broadcast(param, src=0)
 
     def get_shifted_sdf(
         self, points: Float[Tensor, "*N Di"], sdf: Float[Tensor, "*N 1"]

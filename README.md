@@ -14,15 +14,16 @@ threestudio is a unified framework for 3D content creation from text prompts, si
 <img alt="threestudio" src="https://github.com/threestudio-project/threestudio/assets/19284678/01a00207-3240-4a8e-aa6f-d48436370fe7.png" width="100%">
 <br/>
 <img alt="threestudio" src="https://github.com/threestudio-project/threestudio/assets/19284678/e27cb946-ed34-4b8f-87aa-86b689337b0e.gif" width="68%">
+<img alt="threestudio" src="https://github.com/threestudio-project/threestudio/assets/22424247/0783ad8c-02ba-419b-aea1-9f5ecb16ac1b.gif" width="29%">
 <br/>
-<img alt="threestudio" src="https://github.com/threestudio-project/threestudio/assets/19284678/22aba281-e9f2-43d8-ab27-74c0210cff90.png" width="68%">
+<img alt="threestudio" src="https://github.com/threestudio-project/threestudio/assets/22424247/82df7872-7bfb-4508-a045-414b45f0f745.png" width="97%">
 </p>
 
 <p align="center"><b>
 👆 Results obtained from methods implemented by threestudio 👆 <br/>
 | <a href="https://ml.cs.tsinghua.edu.cn/prolificdreamer/">ProlificDreamer</a> | <a href="https://dreamfusion3d.github.io/">DreamFusion</a> | <a href="https://research.nvidia.com/labs/dir/magic3d/">Magic3D</a> | <a href="https://pals.ttic.edu/p/score-jacobian-chaining">SJC</a> | <a href="https://github.com/eladrich/latent-nerf">Latent-NeRF</a> | <a href="https://fantasia3d.github.io/">Fantasia3D</a> | <a href="https://fabi92.github.io/textmesh/">TextMesh</a> |
 <br/>
-| <a href="https://instruct-nerf2nerf.github.io/">InstructNeRF2NeRF</a> | <a href="https://control4darxiv.github.io/">Control4D</a> |
+| <a href="https://instruct-nerf2nerf.github.io/">InstructNeRF2NeRF</a> | <a href="https://control4darxiv.github.io/">Control4D</a> | <a href="https://zero123.cs.columbia.edu/">Zero-1-to-3</a> |
 </b></p>
 
 <p align="center">
@@ -31,7 +32,7 @@ threestudio is a unified framework for 3D content creation from text prompts, si
   </a>
   <a href="https://huggingface.co/spaces/bennyguo/threestudio"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Gradio%20Demo-Huggingface-orange"></a>
   <a href="http://t23-g-01.threestudio.ai"><img src="https://img.shields.io/badge/Gradio%20Demo-Tencent-blue?logo=tencentqq&logoColor=white"></a>
-  <a href="https://discord.gg/yuQAdvwr"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white"></a>
+  <a href="https://discord.gg/ejer2MAB8N"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -39,9 +40,10 @@ threestudio is a unified framework for 3D content creation from text prompts, si
 </p>
 
 ## News
-- 07/06/2023: Join our [Discord channel](https://discord.gg/yuQAdvwr) for lively discussions!
+
+- 07/06/2023: Join our [Discord server](https://discord.gg/ejer2MAB8N) for lively discussions!
 - 07/03/2023: Try text-to-3D online in [HuggingFace Spaces](https://huggingface.co/spaces/bennyguo/threestudio) or using our [self-hosted service](http://t23-g-01.threestudio.ai) (GPU support from Tencent). To host the web interface locally, see [here](https://github.com/threestudio-project/threestudio#gradio-web-interface).
-- 06/20/2023: Implementations of Instruct-NeRF2NeRF and Control4D for high-fidelity 3D editing! Follow the instructions for [Control4D](https://github.com/threestudio-project/threestudio#control4d-) and [Instruct-NeRF2NeRF](https://github.com/threestudio-project/threestudio#instructnerf2nerf-)  to give it a try.
+- 06/20/2023: Implementations of Instruct-NeRF2NeRF and Control4D for high-fidelity 3D editing! Follow the instructions for [Control4D](https://github.com/threestudio-project/threestudio#control4d-) and [Instruct-NeRF2NeRF](https://github.com/threestudio-project/threestudio#instructnerf2nerf-) to give it a try.
 - 06/14/2023: Implementation of TextMesh! Follow the instructions [here](https://github.com/threestudio-project/threestudio#textmesh-) to give it a try.
 - 06/14/2023: Implementation of [prompt debiasing](https://arxiv.org/abs/2303.15413) and [Perp-Neg](https://perp-neg.github.io/)! Follow the instructions [here](https://github.com/threestudio-project/threestudio#tips-on-improving-quality) to give it a try.
 - 05/29/2023: An experimental implementation of using [Zero-1-to-3](https://zero123.cs.columbia.edu/) for 3D generation from a single image! Follow the instructions [here](https://github.com/threestudio-project/threestudio#zero-1-to-3-) to give it a try.
@@ -427,7 +429,6 @@ python launch.py --config configs/textmesh-if.yaml --train --gpu 0 system.prompt
 
 - TextMesh uses a surface-based geometry representation, so you don't need to manually tune the isosurface threshold when exporting meshes!
 
-
 ### Control4D [![arXiv](https://img.shields.io/badge/arXiv-2305.20082-b31b1b.svg?style=flat-square)](https://arxiv.org/abs/2305.20082)
 
 **This is an experimental implementation of Control4D using threestudio! Control4D will release the full code including static and dynamic editing after paper acceptance.**
@@ -468,25 +469,36 @@ python launch.py --config configs/instructnerf2nerf.yaml --train --gpu 0 data.da
 
 **Installation**
 
-Download pretrained weights into `load/zero123`:
+Download pretrained Zero123XL weights into `load/zero123`:
 
 ```sh
 cd load/zero123
-wget https://huggingface.co/cvlab/zero123-weights/resolve/main/105000.ckpt
+wget https://zero123.cs.columbia.edu/assets/zero123-xl.ckpt
 ```
 
-**Results obtained by threestudio (Zero-1-to-3, 128x128, 25000 iterations)**
+**Results obtained by threestudio (Zero-1-to-3)**
 
-https://github.com/threestudio-project/threestudio/assets/22424247/8a7fa056-7668-461f-abe5-668e7b42cd50
+
+https://github.com/threestudio-project/threestudio/assets/22424247/f4e7b66f-7a46-4f9f-8fcd-750300cef651
+
 
 **IMPORTANT NOTE: This is an experimental implementation and we're constantly improving the quality.**
 
 **IMPORTANT NOTE: This implementation is heavily inspired from the Zero-1-to-3 implementation in [https://github.com/ashawkey/stable-dreamfusion](stable-dreamfusion)! `extern/ldm_zero123` is borrowed from `stable-dreamfusion/ldm`.**
 
+**Example running commands**
+
+1. Take an image of your choice, or generate it from text using your favourite AI image generator such as Stable Diffusion XL (https://clipdrop.co/stable-diffusion) E.g. "A simple 3D render of a friendly dog"
+2. Remove its background using Clipdrop (https://clipdrop.co/remove-background)
+3. Save to `load/images/`, preferably with `_rgba.png` as the suffix
+4. Run Zero-1-to-3:
 ```sh
-# object generation with 64x64 NeRF rendering, ~14GB VRAM
-python launch.py --config configs/zero123.yaml --train --gpu 0
+python launch.py --config configs/zero123.yaml --train --gpu 0 data.image_path=./load/images/dog1_rgba.png
 ```
+
+For more scripts for Zero-1-to-3, please check `threestudio/scripts/run_zero123.sh`.
+
+Previous Zero-1-to-3 weights are available at `https://huggingface.co/cvlab/zero123-weights/`. You can download them to `load/zero123` as above, and replace the path at `system.guidance.pretrained_model_name_or_path`.
 
 **Guidance evaluation**
 
@@ -557,7 +569,6 @@ pip install -r requirements-dev.txt
 
 - If you are using VSCode as the text editor: (1) Install `editorconfig` extension. (2) Set the default linter to mypy to enable static type checking. (3) Set the default formatter to black. You could either manually format the document or let the editor format the document each time it is saved by setting `"editor.formatOnSave": true`.
 
-
 - Run `pre-commit install` to install pre-commit hooks which will automatically format the files before commit.
 
 - Make changes to the code, update README and DOCUMENTATION if needed, and open a pull request.
@@ -600,7 +611,7 @@ If you find threestudio helpful, please consider citing:
 
 ```
 @Misc{threestudio2023,
-  author =       {Yuan-Chen Guo and Ying-Tian Liu and Chen Wang and Zi-Xin Zou and Guan Luo and Chia-Hao Chen and Yan-Pei Cao and Song-Hai Zhang},
+  author =       {Yuan-Chen Guo and Ying-Tian Liu and Ruizhi Shao and Christian Laforte and Vikram Voleti and Guan Luo and Chia-Hao Chen and Zi-Xin Zou and Chen Wang and Yan-Pei Cao and Song-Hai Zhang},
   title =        {threestudio: A unified framework for 3D content generation},
   howpublished = {\url{https://github.com/threestudio-project/threestudio}},
   year =         {2023}
