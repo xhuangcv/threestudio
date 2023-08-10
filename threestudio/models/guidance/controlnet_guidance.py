@@ -14,8 +14,8 @@ import threestudio
 from threestudio.models.prompt_processors.base import PromptProcessorOutput
 from threestudio.utils.base import BaseObject
 from threestudio.utils.misc import C, parse_version
-from threestudio.utils.perceptual import PerceptualLoss
 from threestudio.utils.typing import *
+from threestudio.utils.perceptual import PerceptualLoss
 
 
 @threestudio.register("stable-diffusion-controlnet-guidance")
@@ -38,17 +38,15 @@ class ControlNetGuidance(BaseObject):
         ] = None  # field(default_factory=lambda: [0, 2.0, 8.0, 1000])
         half_precision_weights: bool = True
 
+        fixed_size: int = -1
+
         min_step_percent: float = 0.02
         max_step_percent: float = 0.98
 
         diffusion_steps: int = 20
 
         use_sds: bool = False
-
-        use_du: bool = False
-        per_du_step: int = 10
-        start_du_step: int = 1000
-        cache_du: bool = False
+        use_hifa: bool = False
 
         # Canny threshold
         canny_lower_bound: int = 50
@@ -134,17 +132,15 @@ class ControlNetGuidance(BaseObject):
 
         self.num_train_timesteps = self.scheduler.config.num_train_timesteps
         self.set_min_max_steps()  # set to default value
+        self.hifa_step = self.max_step
+
+        self.perceptual_loss = PerceptualLoss().to(self.device)
 
         self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(
             self.device
         )
 
         self.grad_clip_val: Optional[float] = None
-
-        if self.cfg.use_du:
-            if self.cfg.cache_du:
-                self.edit_frames = {}
-            self.perceptual_loss = PerceptualLoss().eval().to(self.device)
 
         threestudio.info(f"Loaded ControlNet!")
 
@@ -193,8 +189,8 @@ class ControlNetGuidance(BaseObject):
 
     @torch.cuda.amp.autocast(enabled=False)
     def encode_images(
-        self, imgs: Float[Tensor, "B 3 512 512"]
-    ) -> Float[Tensor, "B 4 64 64"]:
+        self, imgs: Float[Tensor, "B 3 H W"]
+    ) -> Float[Tensor, "B 4 DH DW"]:
         input_dtype = imgs.dtype
         imgs = imgs * 2.0 - 1.0
         posterior = self.vae.encode(imgs.to(self.weights_dtype)).latent_dist
@@ -203,8 +199,8 @@ class ControlNetGuidance(BaseObject):
 
     @torch.cuda.amp.autocast(enabled=False)
     def encode_cond_images(
-        self, imgs: Float[Tensor, "B 3 512 512"]
-    ) -> Float[Tensor, "B 4 64 64"]:
+        self, imgs: Float[Tensor, "B 3 H W"]
+    ) -> Float[Tensor, "B 4 DH DW"]:
         input_dtype = imgs.dtype
         imgs = imgs * 2.0 - 1.0
         posterior = self.vae.encode(imgs.to(self.weights_dtype)).latent_dist
@@ -215,15 +211,9 @@ class ControlNetGuidance(BaseObject):
 
     @torch.cuda.amp.autocast(enabled=False)
     def decode_latents(
-        self,
-        latents: Float[Tensor, "B 4 H W"],
-        latent_height: int = 64,
-        latent_width: int = 64,
-    ) -> Float[Tensor, "B 3 512 512"]:
+        self, latents: Float[Tensor, "B 4 DH DW"]
+    ) -> Float[Tensor, "B 3 H W"]:
         input_dtype = latents.dtype
-        latents = F.interpolate(
-            latents, (latent_height, latent_width), mode="bilinear", align_corners=False
-        )
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents.to(self.weights_dtype)).sample
         image = (image * 0.5 + 0.5).clamp(0, 1)
@@ -232,10 +222,10 @@ class ControlNetGuidance(BaseObject):
     def edit_latents(
         self,
         text_embeddings: Float[Tensor, "BB 77 768"],
-        latents: Float[Tensor, "B 4 64 64"],
-        image_cond: Float[Tensor, "B 3 512 512"],
+        latents: Float[Tensor, "B 4 DH DW"],
+        image_cond: Float[Tensor, "B 3 H W"],
         t: Int[Tensor, "B"],
-    ) -> Float[Tensor, "B 4 64 64"]:
+    ) -> Float[Tensor, "B 4 DH DW"]:
         self.scheduler.config.num_train_timesteps = t.item()
         self.scheduler.set_timesteps(self.cfg.diffusion_steps)
         with torch.no_grad():
@@ -305,13 +295,117 @@ class ControlNetGuidance(BaseObject):
             control = control.unsqueeze(0)
             control = control.permute(0, 3, 1, 2)
 
-        return F.interpolate(control, (512, 512), mode="bilinear", align_corners=False)
+        return control
+    
+    def compute_grad_hifa(
+        self,
+        latents: Float[Tensor, "B 4 DH DW"],
+        rgb_BCHW_512: Float[Tensor, "B 3 H W"],
+        text_embeddings: Float[Tensor, "BB 77 768"],
+        image_cond: Float[Tensor, "B 3 H W"],
+        **kwargs,
+    ):
+        batch_size, _, _, _ = latents.shape
+        rgb_BCHW_512 = F.interpolate(rgb_BCHW_512, (512, 512), mode="bilinear")
+        assert batch_size == 1
+        
+        guidance_out = {}
 
+        # t = torch.randint(
+        #     self.hifa_step,
+        #     self.hifa_step + 1,
+        #     [1],
+        #     dtype=torch.long,
+        #     device=self.device,
+        # )
+        t = torch.randint(
+            self.min_step,
+            self.max_step + 1,
+            [batch_size],
+            dtype=torch.long,
+            device=self.device,
+        )
+        print("hifa_step:", t)
+        self.scheduler.config.num_train_timesteps = t.item()
+        self.scheduler.set_timesteps(t.item() // 50 + 1)
+        target = latents.clone()
+        with torch.no_grad():
+            # add noise
+            noise = torch.randn_like(latents)
+            latents = self.scheduler.add_noise(latents, noise, t)  # type: ignore
+
+            # sections of code used from https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_instruct_pix2pix.py
+            threestudio.debug("Start editing...")
+            for i, timestep in enumerate(self.scheduler.timesteps):
+                # predict the noise residual with unet, NO grad!
+                with torch.no_grad():
+                    # pred noise
+                    latent_model_input = torch.cat([latents] * 2)
+                    (
+                        down_block_res_samples,
+                        mid_block_res_sample,
+                    ) = self.forward_controlnet(
+                        latent_model_input,
+                        timestep,
+                        encoder_hidden_states=text_embeddings,
+                        image_cond=image_cond,
+                        condition_scale=self.cfg.condition_scale,
+                    )
+
+                    noise_pred = self.forward_control_unet(
+                        latent_model_input,
+                        timestep,
+                        encoder_hidden_states=text_embeddings,
+                        cross_attention_kwargs=None,
+                        down_block_additional_residuals=down_block_res_samples,
+                        mid_block_additional_residual=mid_block_res_sample,
+                    )
+                # perform classifier-free guidance
+                noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
+                    noise_pred_text - noise_pred_uncond
+                )
+                # get previous sample, continue loop
+                latents = self.scheduler.step(noise_pred, timestep, latents).prev_sample
+            threestudio.debug("Editing finished.")
+
+            edit_images = self.decode_latents(latents)
+            edit_images = F.interpolate(
+                edit_images, (512, 512), mode="bilinear"
+            ).permute(0, 2, 3, 1)
+            gt_rgb = edit_images
+            import cv2
+            import numpy as np
+
+            temp = (edit_images.detach().cpu()[0].numpy() * 255).astype(np.uint8)
+            cv2.imwrite(".threestudio_cache/test.jpg", temp[:, :, ::-1])
+
+        w = (1 - self.alphas[t]).view(-1, 1, 1, 1).item()
+        loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
+            
+        guidance_out.update(
+            {
+                # "loss_l1": w
+                # * torch.nn.functional.l1_loss(
+                #     rgb_BCHW_512, gt_rgb.permute(0, 3, 1, 2), reduction="mean"
+                # ),
+                "rgb_bchw": rgb_BCHW_512.contiguous(),
+                "edit_images": edit_images,
+                "loss_sds": loss_sds,
+                "loss_p": self.perceptual_loss(
+                    rgb_BCHW_512.contiguous(),
+                    gt_rgb.permute(0, 3, 1, 2).contiguous(),
+                ).sum(),
+            }
+        )
+
+        return guidance_out
+    
     def compute_grad_sds(
         self,
         text_embeddings: Float[Tensor, "BB 77 768"],
-        latents: Float[Tensor, "B 4 64 64"],
-        image_cond: Float[Tensor, "B 3 512 512"],
+        latents: Float[Tensor, "B 4 DH DW"],
+        image_cond: Float[Tensor, "B 3 H W"],
         t: Int[Tensor, "B"],
     ):
         with torch.no_grad():
@@ -347,96 +441,36 @@ class ControlNetGuidance(BaseObject):
         grad = w * (noise_pred - noise)
         return grad
 
-    def compute_grad_du(
-        self,
-        latents: Float[Tensor, "B 4 64 64"],
-        rgb_BCHW_512: Float[Tensor, "B 3 512 512"],
-        cond_feature: Float[Tensor, "B 3 512 512"],
-        cond_rgb: Float[Tensor, "B H W 3"],
-        text_embeddings: Float[Tensor, "BB 77 768"],
-        **kwargs,
-    ):
-        batch_size, _, _, _ = cond_rgb.shape
-        assert batch_size == 1
-
-        origin_gt_rgb = F.interpolate(
-            cond_rgb.permute(0, 3, 1, 2), (512, 512), mode="bilinear"
-        ).permute(0, 2, 3, 1)
-        need_diffusion = (
-            self.global_step % self.cfg.per_du_step == 0
-            and self.global_step > self.cfg.start_du_step
-        )
-        if self.cfg.cache_du:
-            if torch.is_tensor(kwargs["index"]):
-                batch_index = kwargs["index"].item()
-            else:
-                batch_index = kwargs["index"]
-            if (
-                not (batch_index in self.edit_frames)
-            ) and self.global_step > self.cfg.start_du_step:
-                need_diffusion = True
-        need_loss = self.cfg.cache_du or need_diffusion
-        guidance_out = {}
-
-        if need_diffusion:
-            t = torch.randint(
-                self.min_step,
-                self.max_step,
-                [1],
-                dtype=torch.long,
-                device=self.device,
-            )
-            edit_latents = self.edit_latents(text_embeddings, latents, cond_feature, t)
-            edit_images = self.decode_latents(edit_latents)
-            edit_images = F.interpolate(
-                edit_images, (512, 512), mode="bilinear"
-            ).permute(0, 2, 3, 1)
-            if self.cfg.cache_du:
-                self.edit_frames[batch_index] = edit_images.detach().cpu()
-
-        if need_loss:
-            if self.cfg.cache_du:
-                if batch_index in self.edit_frames:
-                    gt_rgb = self.edit_frames[batch_index].to(cond_feature.device)
-                else:
-                    gt_rgb = origin_gt_rgb
-            else:
-                gt_rgb = edit_images
-            guidance_out.update(
-                {
-                    "loss_l1": torch.nn.functional.l1_loss(
-                        rgb_BCHW_512, gt_rgb.permute(0, 3, 1, 2), reduction="sum"
-                    ),
-                    "loss_p": self.perceptual_loss(
-                        rgb_BCHW_512.contiguous(),
-                        gt_rgb.permute(0, 3, 1, 2).contiguous(),
-                    ).sum(),
-                }
-            )
-
-        return guidance_out
-
     def __call__(
         self,
         rgb: Float[Tensor, "B H W C"],
-        prompt_utils: PromptProcessorOutput,
         cond_rgb: Float[Tensor, "B H W C"],
+        prompt_utils: PromptProcessorOutput,
         **kwargs,
     ):
-        batch_size, _, _, _ = rgb.shape
+        batch_size, H, W, _ = rgb.shape
         assert batch_size == 1
+        assert rgb.shape[:-1] == cond_rgb.shape[:-1]
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
-        latents: Float[Tensor, "B 4 64 64"]
-        rgb_BCHW_512 = F.interpolate(
-            rgb_BCHW, (512, 512), mode="bilinear", align_corners=False
+        latents: Float[Tensor, "B 4 DH DW"]
+        if self.cfg.fixed_size > 0:
+            RH, RW = self.cfg.fixed_size, self.cfg.fixed_size
+        else:
+            RH, RW = H // 8 * 8, W // 8 * 8
+        rgb_BCHW_HW8 = F.interpolate(
+            rgb_BCHW, (RH, RW), mode="bilinear", align_corners=False
         )
-        latents = self.encode_images(rgb_BCHW_512)
+        latents = self.encode_images(rgb_BCHW_HW8)
 
-        cond_feature = self.prepare_image_cond(cond_rgb)
+        image_cond = self.prepare_image_cond(cond_rgb)
+        image_cond = F.interpolate(
+            image_cond, (RH, RW), mode="bilinear", align_corners=False
+        )
 
         temp = torch.zeros(1).to(rgb.device)
-        text_embeddings = prompt_utils.get_text_embeddings(temp, temp, temp, False)
+        # text_embeddings = prompt_utils.get_text_embeddings(temp, temp, temp, False)
+        text_embeddings = prompt_utils.get_text_embeddings(kwargs["elevation"], kwargs["azimuth"], kwargs["camera_distances"], True)
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         t = torch.randint(
@@ -447,34 +481,37 @@ class ControlNetGuidance(BaseObject):
             device=self.device,
         )
 
-        guidance_out = {}
         if self.cfg.use_sds:
-            grad = self.compute_grad_sds(text_embeddings, latents, cond_feature, t)
+            grad = self.compute_grad_sds(text_embeddings, latents, image_cond, t)
             grad = torch.nan_to_num(grad)
             if self.grad_clip_val is not None:
                 grad = grad.clamp(-self.grad_clip_val, self.grad_clip_val)
             target = (latents - grad).detach()
             loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
-            guidance_out.update(
-                {
-                    "loss_sds": loss_sds,
-                    "grad_norm": grad.norm(),
-                    "min_step": self.min_step,
-                    "max_step": self.max_step,
-                }
-            )
+            return {
+                "loss_sds": loss_sds,
+                "grad_norm": grad.norm(),
+                "min_step": self.min_step,
+                "max_step": self.max_step,
+            }
+        elif self.cfg.use_hifa:
+            loss_hifa = self.compute_grad_hifa(latents, rgb_BCHW_HW8, text_embeddings, image_cond)
+            return loss_hifa
+        else:
+            edit_latents = self.edit_latents(text_embeddings, latents, image_cond, t)
+            edit_images = self.decode_latents(edit_latents)
+            edit_images = F.interpolate(edit_images, (H, W), mode="bilinear")
 
-        if self.cfg.use_du:
-            grad = self.compute_grad_du(
-                latents, rgb_BCHW_512, cond_feature, cond_rgb, text_embeddings, **kwargs
-            )
-            guidance_out.update(grad)
-
-        return guidance_out
+            return {"edit_images": edit_images.permute(0, 2, 3, 1)}
 
     def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
-        self.global_step = global_step
-
+        # clip grad for stable training as demonstrated in
+        # Debiasing Scores and Prompts of 2D Diffusion for Robust Text-to-3D Generation
+        # http://arxiv.org/abs/2303.15413
+        if self.cfg.grad_clip is not None:
+            self.grad_clip_val = C(self.cfg.grad_clip, epoch, global_step)
+        self.hifa_step = int(self.min_step + (self.max_step - self.min_step) * max(0, (1 - global_step / 2000)))
+        
         self.set_min_max_steps(
             min_step_percent=C(self.cfg.min_step_percent, epoch, global_step),
             max_step_percent=C(self.cfg.max_step_percent, epoch, global_step),
@@ -485,14 +522,13 @@ if __name__ == "__main__":
     from threestudio.utils.config import ExperimentConfig, load_config
     from threestudio.utils.typing import Optional
 
-    cfg = load_config("configs/experimental/controlnet-normal.yaml")
+    cfg = load_config("configs/debugging/controlnet-normal.yaml")
     guidance = threestudio.find(cfg.system.guidance_type)(cfg.system.guidance)
     prompt_processor = threestudio.find(cfg.system.prompt_processor_type)(
         cfg.system.prompt_processor
     )
 
     rgb_image = cv2.imread("assets/face.jpg")[:, :, ::-1].copy() / 255
-    rgb_image = cv2.resize(rgb_image, (512, 512))
     rgb_image = torch.FloatTensor(rgb_image).unsqueeze(0).to(guidance.device)
     prompt_utils = prompt_processor()
     guidance_out = guidance(rgb_image, rgb_image, prompt_utils)
